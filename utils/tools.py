@@ -5,10 +5,10 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 import torchvision.datasets as dsets
-
+import pdb
 
 def config_dataset(config):
-    if "cifar" in config["dataset"]:
+    if "cifar_10" in config["dataset"]:
         config["topK"] = -1
         config["n_class"] = 10
     elif config["dataset"] in ["nuswide_21", "nuswide_21_m"]:
@@ -30,9 +30,7 @@ def config_dataset(config):
         config["topK"] = -1
         config["n_class"] = 20
 
-    config["data_path"] = "/dataset/" + config["dataset"] + "/"
-    if config["dataset"] == "nuswide_21":
-        config["data_path"] = "/dataset/NUS-WIDE/"
+    config["data_path"] = "../image_datasets/" + config["dataset"] + "/"
     if config["dataset"] in ["nuswide_21_m", "nuswide_81_m"]:
         config["data_path"] = "/dataset/nus_wide_m/"
     if config["dataset"] == "coco":
@@ -101,16 +99,16 @@ def cifar_dataset(config):
     ])
 
     # Dataset
-    train_dataset = MyCIFAR10(root='/dataset/cifar/',
+    train_dataset = MyCIFAR10(root='../image_datasets/cifar_10/',
                               train=True,
                               transform=transform,
                               download=True)
 
-    test_dataset = MyCIFAR10(root='/dataset/cifar/',
+    test_dataset = MyCIFAR10(root='../image_datasets/cifar_10/',
                              train=False,
                              transform=transform)
 
-    database_dataset = MyCIFAR10(root='/dataset/cifar/',
+    database_dataset = MyCIFAR10(root='../image_datasets/cifar_10/',
                                  train=False,
                                  transform=transform)
 
@@ -135,13 +133,13 @@ def cifar_dataset(config):
             database_index = np.concatenate((database_index, index[train_size + test_size:]))
         first = False
 
-    if config["dataset"] == "cifar10":
+    if config["dataset"] == "cifar_10":
         # test:1000, train:5000, database:54000
         pass
-    elif config["dataset"] == "cifar10-1":
+    elif config["dataset"] == "cifar_10-1":
         # test:1000, train:5000, database:59000
         database_index = np.concatenate((train_index, database_index))
-    elif config["dataset"] == "cifar10-2":
+    elif config["dataset"] == "cifar_10-2":
         # test:10000, train:50000, database:50000
         database_index = train_index
 
@@ -205,16 +203,83 @@ def compute_result(dataloader, net, device):
     return torch.cat(bs).sign(), torch.cat(clses)
 
 
+def comput_ClassAware_result(dataloader, net, class_W_map, device):
+    bs, clses = [], []
+    net.eval()
+    for img, cls, _ in tqdm(dataloader):
+        clses.append(cls)
+        test_u = net(img.to(device)).data
+        bs.append(test_u)
+    bs = torch.cat(bs)
+    class_bs = torch.matmul(bs, class_W_map).detach().cpu()
+    return class_bs.sign(), torch.cat(clses)
+
+
 def CalcHammingDist(B1, B2):
     q = B2.shape[1]
     distH = 0.5 * (q - np.dot(B1, B2.transpose()))
     return distH
 
 
+def CalcTopMap_ClassAware_gpu(rB, qB, retrievalL, queryL, topk):# rB: n_class, n_bs, class_bit
+    num_query, n_cls = queryL.size()
+    n_db, _ = retrievalL.size()
+    topkmap = 0
+    pdb.set_trace()
+    hamm_class = []
+    gnd = torch.matmul(queryL, retrievalL.t()) > 0 # n_bs, n_db
+    hamm_class = torch.zeros(n_cls, num_query, n_db)
+    for i in range(n_cls):
+        hamm_d = torch.matmul(qB[i,:,:], rB[i,:,:].t()).detach()
+        hamm_class[i, :, :] = hamm_d
+    pdb.set_trace()
+    
+        
+    hamm = torch.max(hamm_class, dim=0)[0] # n_bs, n_db
+    tops, tops_ind = torch.topk(hamm, k=topk, dim=-1)
+    n_folds = 10
+    fold_bs = num_query / 10
+    gnd_tops = torch.zeros(num_query, topk)
+    for i in range(n_folds):
+        gnd_top = gnd[fold_bs*i:fold_bs*(i+1), :][:, tops_ind][fold_bs*i:fold_bs*(i+1), :]
+        gnd_tops[fold_bs*i:fold_bs*(i+1)] = gnd_top
+        
+    tsum = torch.sum(gnd_tops, dim=-1)
+    count = torch.linspace(1, tsum, tsum).unsqueeze(0).expand(n_cls) # n_cls, tsum
+    
+    
+    
+
+def CalcTopMap_ClassAware(rB, qB, retrievalL, queryL, topk): # rB: n_class, n_bs, class_bit
+    num_query = queryL.shape[0]
+    n_cls = queryL.shape[1]
+    topkmap = 0
+    for iter in tqdm(range(num_query)):
+        gnd = (np.dot(queryL[iter, :], retrievalL.transpose()) > 0).astype(np.float32)
+#         gnd = np.expand_dims(queryL[iter, :],0).repeat(db_size, axis=0) * retrievalL.astype(np.float32)
+        hamm_class = np.array([CalcHammingDist(qB[i, iter, :], rB[i, :, :]) for i in range(n_cls)]) #n_cls, n_db
+        hamm = np.max(hamm_class, axis=0)
+        ind = np.argsort(hamm)
+        gnd = gnd[ind]
+
+        tgnd = gnd[0:topk]
+        tsum = np.sum(tgnd).astype(int)
+        if tsum == 0:
+            continue
+        count = np.linspace(1, tsum, tsum)
+
+        tindex = np.asarray(np.where(tgnd == 1)) + 1.0
+        topkmap_ = np.mean(count / (tindex))
+        topkmap = topkmap + topkmap_
+    topkmap = topkmap / num_query
+    return topkmap
+
+
 def CalcTopMap(rB, qB, retrievalL, queryL, topk):
     num_query = queryL.shape[0]
     topkmap = 0
     for iter in tqdm(range(num_query)):
+        pdb.set_trace()
         gnd = (np.dot(queryL[iter, :], retrievalL.transpose()) > 0).astype(np.float32)
         hamm = CalcHammingDist(qB[iter, :], rB)
         ind = np.argsort(hamm)
