@@ -1,0 +1,12 @@
+
+resize_size: 256
+crop_size: 224
+batch_size: 128
+epoch: 200
+test_interval: 5
+save_flag: 1
+model_path: "./model"
+result_path: "./results"
+alpha: 0.1
+wD_train: True
+n_workers: 10

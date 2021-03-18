@@ -5,4 +5,11 @@
 /data/
 /data/*
 /data/*/*
+/results/
+/results/*
+/results/*/
+/model/
+/model/*
+/model/*/*
+
 

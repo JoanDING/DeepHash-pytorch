@@ -177,21 +177,20 @@ def get_data(config):
     if "cifar" in config["dataset"]:
         return cifar_dataset(config)
 
-    dsets = {}
-    dset_loaders = {}
     data_config = config["data"]
-
-    for data_set in ["train_set", "test", "database"]:
-        dsets[data_set] = ImageList(config["data_path"],
-                                    open(data_config[data_set]["list_path"]).readlines(),
-                                    transform=image_transform(config["resize_size"], config["crop_size"], data_set))
-        print(data_set, len(dsets[data_set]))
-        dset_loaders[data_set] = util_data.DataLoader(dsets[data_set],
-                                                      batch_size=data_config[data_set]["batch_size"],
-                                                      shuffle=True, num_workers=4)
-
-    return dset_loaders["train_set"], dset_loaders["test"], dset_loaders["database"], \
-           len(dsets["train_set"]), len(dsets["test"]), len(dsets["database"])
+ 
+    train_set = ImageList(config["data_path"], open(data_config["train_set"]["list_path"]).readlines(), transform=image_transform(config["resize_size"], config["crop_size"], "train_set"))
+    test_set = ImageList(config["data_path"], open(data_config["test"]["list_path"]).readlines(), transform=image_transform(config["resize_size"], config["crop_size"], "test"))
+    database_set = ImageList(config["data_path"], open(data_config["database"]["list_path"]).readlines(), transform=image_transform(config["resize_size"], config["crop_size"], "database"))
+    
+    train_loader = util_data.DataLoader(train_set,batch_size=data_config["train_set"]["batch_size"], shuffle=True, num_workers=config["n_workers"])
+    test_loader = util_data.DataLoader(test_set,batch_size=data_config["test"]["batch_size"], shuffle=False, num_workers=config["n_workers"])
+    database_loader = util_data.DataLoader(database_set,batch_size=data_config["test"]["batch_size"], shuffle=False, num_workers=config["n_workers"])
+    
+    print("train samples: %d"%len(train_set))
+    print("test samples: %d"%len(test_set))
+    print("database samples: %d"%len(database_set))
+    return train_loader, test_loader, database_loader, len(train_set), len(test_set), len(database_set)
 
 
 def compute_result(dataloader, net, device):
@@ -203,7 +202,7 @@ def compute_result(dataloader, net, device):
     return torch.cat(bs).sign(), torch.cat(clses)
 
 
-def comput_ClassAware_result(dataloader, net, class_W_map, device):
+def compute_ClassAware_result(dataloader, net, class_W_map, device):
     bs, clses = [], []
     net.eval()
     for img, cls, _ in tqdm(dataloader):
@@ -221,34 +220,6 @@ def CalcHammingDist(B1, B2):
     return distH
 
 
-def CalcTopMap_ClassAware_gpu(rB, qB, retrievalL, queryL, topk):# rB: n_class, n_bs, class_bit
-    num_query, n_cls = queryL.size()
-    n_db, _ = retrievalL.size()
-    topkmap = 0
-    pdb.set_trace()
-    hamm_class = []
-    gnd = torch.matmul(queryL, retrievalL.t()) > 0 # n_bs, n_db
-    hamm_class = torch.zeros(n_cls, num_query, n_db)
-    for i in range(n_cls):
-        hamm_d = torch.matmul(qB[i,:,:], rB[i,:,:].t()).detach()
-        hamm_class[i, :, :] = hamm_d
-    pdb.set_trace()
-    
-        
-    hamm = torch.max(hamm_class, dim=0)[0] # n_bs, n_db
-    tops, tops_ind = torch.topk(hamm, k=topk, dim=-1)
-    n_folds = 10
-    fold_bs = num_query / 10
-    gnd_tops = torch.zeros(num_query, topk)
-    for i in range(n_folds):
-        gnd_top = gnd[fold_bs*i:fold_bs*(i+1), :][:, tops_ind][fold_bs*i:fold_bs*(i+1), :]
-        gnd_tops[fold_bs*i:fold_bs*(i+1)] = gnd_top
-        
-    tsum = torch.sum(gnd_tops, dim=-1)
-    count = torch.linspace(1, tsum, tsum).unsqueeze(0).expand(n_cls) # n_cls, tsum
-    
-    
-    
 
 def CalcTopMap_ClassAware(rB, qB, retrievalL, queryL, topk): # rB: n_class, n_bs, class_bit
     num_query = queryL.shape[0]
@@ -275,11 +246,11 @@ def CalcTopMap_ClassAware(rB, qB, retrievalL, queryL, topk): # rB: n_class, n_bs
     return topkmap
 
 
+
 def CalcTopMap(rB, qB, retrievalL, queryL, topk):
     num_query = queryL.shape[0]
     topkmap = 0
     for iter in tqdm(range(num_query)):
-        pdb.set_trace()
         gnd = (np.dot(queryL[iter, :], retrievalL.transpose()) > 0).astype(np.float32)
         hamm = CalcHammingDist(qB[iter, :], rB)
         ind = np.argsort(hamm)

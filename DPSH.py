@@ -7,12 +7,23 @@ import torch.optim as optim
 import time
 import numpy as np
 import pdb
+
+torch.manual_seed(0)
+np.random.seed(1234)
+
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 
 # DPSH(IJCAI2016)
 # paper [Feature Learning based Deep Supervised Hashing with Pairwise Labels](https://cs.nju.edu.cn/lwj/paper/IJCAI16_DPSH.pdf)
 # code [DPSH-pytorch](https://github.com/jiangqy/DPSH-pytorch)
+def mk_save_dir(types, root_path, settings):
+    output_dir = "./%s/%s"%(types, root_path)
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    output_file = output_dir + "%s"%("_".join([str(i) for i in settings]))
+    return output_file
+
 
 def get_config():
     config = {
@@ -24,6 +35,7 @@ def get_config():
         "crop_size": 224,
         "batch_size": 128,
         "net": AlexNet,
+        "n_workers": 4,
         # "net":ResNet,
 #         "dataset": "cifar_10",
 #         "dataset": "cifar10-1",
@@ -39,7 +51,7 @@ def get_config():
         "test_map": 5,
         "save_path": "save/DPSH",
         # "device":torch.device("cpu"),
-        "device": torch.device("cuda:1"),
+        "device": torch.device("cuda:0"),
         "bit_list": [48],
     }
     config = config_dataset(config)
@@ -77,7 +89,8 @@ def train_val(config, bit):
     optimizer = config["optimizer"]["type"](net.parameters(), **(config["optimizer"]["optim_params"]))
 
     criterion = DPSHLoss(config, bit)
-
+    settings = ["bit", str(bit),"lr", str(config["optimizer"]["optim_params"]["lr"]), "wd", str(config["optimizer"]["optim_params"]["weight_decay"])]
+    performance_file = mk_save_dir("performance", "%s/DPSH/"%config["dataset"] , settings)
     Best_mAP = 0
 
     for epoch in range(config["epoch"]):
@@ -113,8 +126,7 @@ def train_val(config, bit):
             trn_binary, trn_label = compute_result(dataset_loader, net, device=device)
 
             # print("calculating map.......")
-            mAP = CalcTopMap(trn_binary.numpy(), tst_binary.numpy(), trn_label.numpy(), tst_label.numpy(),
-                             config["topK"])
+            mAP = CalcTopMap(trn_binary.numpy(), tst_binary.numpy(), trn_label.numpy(), tst_label.numpy(),config["topK"])
 
             if mAP > Best_mAP:
                 Best_mAP = mAP
@@ -127,9 +139,13 @@ def train_val(config, bit):
                             trn_binary.numpy())
                     torch.save(net.state_dict(),
                                os.path.join(config["save_path"], config["dataset"] + "-" + str(mAP) + "-model.pt"))
-            print("%s epoch:%d, bit:%d, dataset:%s, MAP:%.3f, Best MAP: %.3f" % (
-                config["info"], epoch + 1, bit, config["dataset"], mAP, Best_mAP))
-            print(config)
+            performance_log = "%s epoch:%d, bit:%d, dataset:%s, MAP:%.3f, Best MAP: %.3f" % (
+                config["info"], epoch + 1, bit, config["dataset"], mAP, Best_mAP)
+
+            print(performance_log)
+            output_f = open(performance_file, "a")
+            output_f.write(performance_log + "\n")
+            output_f.close()
 
 
 if __name__ == "__main__":
